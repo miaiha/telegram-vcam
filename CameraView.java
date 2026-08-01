@@ -55,6 +55,11 @@ import android.view.View;
 import android.view.animation.DecelerateInterpolator;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
+import android.media.MediaPlayer;
+import android.content.Intent;
+import android.net.Uri;
+import android.app.Activity;
+import android.widget.ImageView;
 
 import androidx.annotation.NonNull;
 import androidx.core.graphics.ColorUtils;
@@ -406,6 +411,17 @@ public class CameraView extends FrameLayout implements TextureView.SurfaceTextur
         CameraController.getInstance().addOnErrorListener(this);
 
         initialFrontface = isFrontface = frontface;
+        floatingButton = new ImageView(context);
+        floatingButton.setImageResource(org.telegram.messenger.R.drawable.ic_ab_other);
+        floatingButton.setPadding(AndroidUtilities.dp(12), AndroidUtilities.dp(12), AndroidUtilities.dp(12), AndroidUtilities.dp(12));
+        floatingButton.setOnClickListener(v -> {
+            Activity activity = (Activity) getContext();
+            Intent intent = new Intent(Intent.ACTION_PICK);
+            intent.setType("video/*");
+            activity.startActivityForResult(intent, 9999);
+        });
+        addView(floatingButton, LayoutHelper.createFrame(56, 56, Gravity.BOTTOM | Gravity.RIGHT, 16, 0, 16, 80));
+
         textureView = new TextureView(context);
         if (!(this.lazy = lazy)) {
             initTexture();
@@ -1207,6 +1223,19 @@ public class CameraView extends FrameLayout implements TextureView.SurfaceTextur
     private volatile float shapeValue;
 
     public class CameraGLThread extends DispatchQueue {
+        private void startVirtualPlayer() {
+            AndroidUtilities.runOnUIThread(() -> {
+                if (virtualPlayer != null) virtualPlayer.release();
+                virtualPlayer = new MediaPlayer();
+                try {
+                    virtualPlayer.setDataSource(getContext(), Uri.parse(globalVirtualVideoPath));
+                    virtualPlayer.setSurface(virtualSurface);
+                    virtualPlayer.setLooping(true);
+                    virtualPlayer.prepare();
+                    virtualPlayer.start();
+                } catch (Exception e) {}
+            });
+        }
 
         private final static int EGL_CONTEXT_CLIENT_VERSION = 0x3098;
         private final static int EGL_OPENGL_ES2_BIT = 4;
@@ -1234,6 +1263,8 @@ public class CameraView extends FrameLayout implements TextureView.SurfaceTextur
         private final CameraSessionWrapper currentSession[] = new CameraSessionWrapper[2];
 
         private final SurfaceTexture[] cameraSurface = new SurfaceTexture[2];
+        private int virtualTextureId = -1;
+        private SurfaceTexture virtualSurfaceTexture;
 
         private final int DO_RENDER_MESSAGE = 0;
         private final int DO_SHUTDOWN_MESSAGE = 1;
@@ -1421,7 +1452,7 @@ public class CameraView extends FrameLayout implements TextureView.SurfaceTextur
             }
 
             GLES20.glGenTextures(1, cameraTexture[0], 0);
-            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, cameraTexture[0][0]);
+            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, (globalVirtualVideoPath != null) ? virtualTextureId : cameraTexture[0][0]);
             GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
             GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
             GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
@@ -1453,6 +1484,15 @@ public class CameraView extends FrameLayout implements TextureView.SurfaceTextur
             textureBuffer = ByteBuffer.allocateDirect(texData.length * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
             textureBuffer.put(texData).position(0);
 
+            
+            int[] textures = new int[1];
+            GLES20.glGenTextures(1, textures, 0);
+            virtualTextureId = textures[0];
+            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, virtualTextureId);
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+            virtualSurfaceTexture = new SurfaceTexture(virtualTextureId);
+            AndroidUtilities.runOnUIThread(() -> virtualSurface = new Surface(virtualSurfaceTexture));
             cameraSurface[0] = new SurfaceTexture(cameraTexture[0][0]);
             cameraSurface[0].setOnFrameAvailableListener(this::updTex);
 
@@ -1663,7 +1703,7 @@ public class CameraView extends FrameLayout implements TextureView.SurfaceTextur
             if (updateTexImage1) {
                 try {
                     if (cameraSurface[0] != null && cameraId1 >= 0) {
-                        cameraSurface[0].updateTexImage();
+                        if (globalVirtualVideoPath != null && virtualSurfaceTexture != null) { virtualSurfaceTexture.updateTexImage(); if (virtualPlayer == null) startVirtualPlayer(); } cameraSurface[0].updateTexImage();
                     }
                 } catch (Throwable e) {
                     FileLog.e(e);
@@ -1852,7 +1892,7 @@ public class CameraView extends FrameLayout implements TextureView.SurfaceTextur
                 if (drawBlur && cameraSurface[0] != null) {
                     GLES20.glUseProgram(drawBlurProgram);
                     GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
-                    GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, cameraTexture[0][0]);
+                    GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, (globalVirtualVideoPath != null) ? virtualTextureId : cameraTexture[0][0]);
 
                     GLES20.glVertexAttribPointer(blurPositionHandle, 3, GLES20.GL_FLOAT, false, 12, vertexBuffer);
                     GLES20.glEnableVertexAttribArray(blurPositionHandle);
@@ -3405,3 +3445,4 @@ public class CameraView extends FrameLayout implements TextureView.SurfaceTextur
 
     }
 }
+    public static void setGlobalVirtualVideo(String path) { globalVirtualVideoPath = path; }
